@@ -6,7 +6,7 @@
  * Time: 下午6:39
  */
 
-namespace Zlcompose\MSQ;
+namespace Zl\Compose\MSQ;
 
 class Client
 {
