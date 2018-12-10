@@ -1,18 +1,23 @@
 {
-    "name": "zl/compose",
-    "description": "there will be many php wheel make house here",
-    "license": "MIT",
-    "authors": [
-        {
-            "name": "zhanglong",
-            "email": "1428804176@qq.com"
-        }
-    ],
-    "minimum-stability": "dev",
-    "require": {},
-    "autoload": {
-      "psr-4": {
-        "Zl\\Compose\\" : "src/"
-      }
+  "name": "zl/compose",
+  "description": "there will be many php wheel make house here",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "zhanglong",
+      "email": "1428804176@qq.com"
     }
+  ],
+  "minimum-stability": "dev",
+  "require": {},
+  "autoload": {
+    "psr-4": {
+      "Zl\\Compose\\": "src/"
+    },
+    "files": [
+      "src/helpers.php"
+    ]
+  },
+  "autoload-dev": {
+  }
 }
