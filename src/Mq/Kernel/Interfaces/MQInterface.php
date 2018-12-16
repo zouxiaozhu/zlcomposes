@@ -8,6 +8,8 @@
 
 namespace Zl\Compose\Mq\Kernel\Interfaces;
 
+use Grpc\Call;
+
 interface MQInterface
 {
     public function __construct($config);
@@ -24,7 +26,7 @@ interface MQInterface
 
     public function onceConsumer();
 
-    public function consumerBlock();
+    public function consumerBlock(callable $callable, $no_ack = false, $suggest_death_count = 5);
 
     public function consumerBlockRetry();
 

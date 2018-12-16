@@ -9,6 +9,7 @@
 namespace Zl\Compose\Mq\AMQP;
 
 use App\Enum\CodeEnum;
+use Framework\Exceptions\ZxzApiException;
 use Framework\Handlers\ConfigHandler;
 use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
@@ -68,6 +69,12 @@ class Client implements MQInterface
      */
     protected $routing_key;
 
+
+    /**
+     * @var bool $is_dead_letter
+     */
+    protected $is_dead_letter = false;
+
     /**
      * Client constructor.
      * @param $config
@@ -113,34 +120,39 @@ class Client implements MQInterface
      */
     public function setQueue($queue_name, $type = AMQP_EX_TYPE_DIRECT, $args = [], $delayed_requeue_ms = 10000)
     {
+        $subQueueName = $queue_name;
+
         if ($delayed_requeue_ms) {
             $subQueueName = $queue_name . '__dlx';
             $subDelayedQueueName = $subQueueName . '_requeue_' . $delayed_requeue_ms . 'ms';
+
+            $this->channel->queue_declare($subDelayedQueueName, false, false, false, false, false,
+                new AMQPTable([
+                    'x-dead-letter-exchange' => '',
+                    'x-dead-letter-routing-key' => $subQueueName,
+                    'x-message-ttl' => $delayed_requeue_ms
+                ]));
+
+            $this->channel->queue_declare($subQueueName, false, false, false, false, false,
+                new AMQPTable([
+                    'x-dead-letter-exchange' => '',
+                    'x-dead-letter-routing-key' => $subDelayedQueueName,
+                ]));
+
+            $this->setQueueDelayTrue();
+        } else {
+            $this->channel->queue_declare($subQueueName, false, false, false, false, false,
+                new AMQPTable([]));
         }
-
-        $this->channel->queue_declare($subDelayedQueueName, false, false, false, false, false,
-            new AMQPTable([
-                'x-dead-letter-exchange' => '',
-                'x-dead-letter-routing-key' => $subQueueName,
-                'x-message-ttl' => 50000
-            ]));
-
-        $this->channel->queue_declare($subQueueName, false, false, false, false, false,
-            new AMQPTable([
-                'x-dead-letter-exchange' => '',
-                'x-dead-letter-routing-key' => $subDelayedQueueName,
-            ]));
-
         $this->queue_name = $subQueueName;
         return $this;
     }
 
     /**
      * @param $routing_key
-     * @param array $args
      * @return $this
      */
-    public function bind($routing_key, $args = [])
+    public function bind($routing_key)
     {
         $this->routing_key = $routing_key;
         $this->channel->queue_bind($this->queue_name, $this->exchange_name, $routing_key);
@@ -155,19 +167,11 @@ class Client implements MQInterface
      */
     public function publish($body)
     {
-        $this->isChannelValid();
+        $this->channelValid();
         $body = is_array($body) ? json_encode($body) : $body;
         $msgBody = new AMQPMessage($body, ['delivery_mode' => AMQP_DURABLE]);
         return $this->channel->basic_publish(
             $msgBody, $this->exchange_name, $this->routing_key);
-    }
-
-    /**
-     *
-     */
-    public static function publishMsg()
-    {
-
     }
 
     /**
@@ -205,9 +209,65 @@ class Client implements MQInterface
     /**
      *
      */
-    public function consumerBlock()
+    public function consumerBlock(callable $callable, $no_ack = false, $suggest_death_count = 5)
     {
-        // TODO: Implement onceConsumer() method.
+//        $this->channel->basic_qos(0, 10, false);
+        $a = $this->channel->basic_consume(
+            $this->queue_name,
+            '',
+            false,
+            $no_ack,
+            false,
+            false,
+
+            function ($message) use ($callable, $suggest_death_count) {
+                $need_ack = $callback_result = true;
+                $need_log = false;
+                /**
+                 * @var AMQPMessage $message
+                 */
+                zxzLog($message->body, 'mq');
+                zxzLog(get_object_vars($message), 'mq');
+                zxzLog($message->get_properties(), 'mq');
+                try {
+                    /**
+                     * @var AMQPTable $nativaHeaderData
+                     */
+                    if ($message->has('application_headers')) {
+                        $headers = $message->get('application_headers')->getNativeData();
+                        if (isset($headers['x-death'][0]['count'])) {
+                            $retry = $headers['x-death'][0]['count'];
+                        }
+                    }
+
+                    if ($retry >= $suggest_death_count) {
+                        $need_ack = true;
+                        $need_log = true;
+                    } else {
+                        $callback_result = call_user_func($callable, $message->body);
+                        $need_ack = $callback_result === false ? false : true;
+                    }
+                } catch (\Exception $exception) {
+                    $need_ack = false;
+                }
+
+                if ($need_ack) {
+                    $this->channel->basic_ack($message->delivery_info['delivery_tag']);
+                } else {
+                    $this->channel->basic_reject($message->delivery_info['delivery_tag'], false);
+                }
+
+            });
+
+        while (count($this->channel->callbacks)) {
+            $this->channel->wait();
+        }
+
+//        while (isset($this->channel->callbacks[$a]) && $this->channel->getConnection()->select(null)) {
+//            $this->channel->wait(); // 这个wait蛮难理解的, 有点类似libevent的loop()
+//            break;
+//        }
+
     }
 
     /**
@@ -250,11 +310,11 @@ class Client implements MQInterface
     public function _connect(array $config, $pconnect = true)
     {
         if (!$config) {
-            throw new ConnectExp("连接参数异常", 500);
+//            throw new ConnectExp("连接参数异常", 500);
+            throw new ZxzApiException("连接参数异常" . json_encode(debug_backtrace()), 500);
         }
 
         $this->config_key = $this->getConfigAlias($config);
-//        echo   $config['host'], $config['port'], $config['login'], $config['password'];die;
 
         try {
             $AMQPConnection = new AMQPStreamConnection(
@@ -267,11 +327,11 @@ class Client implements MQInterface
             );
         }
 
-//        if (!$AMQPConnection->isConnected()) {
-//            throw new ConnectExp("连接参数异常", 500);
-//        }
-
         $this->connection = $AMQPConnection;
+
+        if (!$this->isConnected()) {
+            throw new ConnectExp("连接参数异常", 500);
+        }
         return $this;
     }
 
@@ -312,19 +372,8 @@ class Client implements MQInterface
         return $configKey;
     }
 
-    /**
-     * @return mixed
-     */
-    public function getConfigKey()
+    protected function setQueueDelayTrue()
     {
-        return $this->config_key;
-    }
-
-    /**
-     *
-     */
-    public function isChannelValid()
-    {
-        return $this->channelValid();
+        return $this->is_dead_letter = true;
     }
 }
