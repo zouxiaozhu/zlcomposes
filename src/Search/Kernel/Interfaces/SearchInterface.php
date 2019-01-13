@@ -6,22 +6,19 @@
  * Time: 上午10:50
  */
 
-namespace Zl\Compose\Mq\Kernel\Interfaces;
-
-use Grpc\Call;
+namespace Zl\Compose\Search\Kernel\Interfaces;
 
 interface SearchInterface
 {
     public function __construct($config);
 
-    public function channel();
-
-    public function reconnect();
+    public function connect();
 
     public function isConnected();
 
-    public function close();
-
     public function ping();
 
+    public function close();
+
+    public function isClose();
 }

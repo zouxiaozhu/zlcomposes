@@ -8,8 +8,6 @@
 
 namespace Zl\Compose\Mq\Kernel\Interfaces;
 
-use Grpc\Call;
-
 interface MQInterface
 {
     public function __construct($config);
@@ -18,15 +16,15 @@ interface MQInterface
 
     public function publish($body);
 
-    public function publishWithOutExp();
+    public function publishWithOutExp($body);
 
-    public function publishWithConfirm();
+    public function publishWithConfirm($body);
 
-    public function publishWithConfirmWithoutExp();
+    public function publishWithConfirmWithoutExp($body);
 
     public function onceConsumer();
 
-    public function consumerBlock(callable $callable, $no_ack = false, $suggest_death_count = 5);
+    public function consumerBlock(callable $callable, $no_ack = false, $suggest_death_count = 5, $block_num = 0);
 
     public function consumerBlockRetry();
 

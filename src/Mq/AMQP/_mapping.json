@@ -1,0 +1,45 @@
+//curl -XPUT 'http://host:9200' -d'
+// index/_mapping/type
+{
+  "properties": {
+    "user_name": {
+      "type": "string",
+      "analyzer" : "standard"
+    }
+  }
+}
+//'
+analyzer
+{
+  "fulltext": {
+    "_all": {
+      "analyzer": "ik_max_word",
+      "search_analyzer": "ik_max_word",
+      "term_vector": "no",
+      "store": "false"
+    },
+    "properties": {
+      "zf_hg_e": {
+        "properties": {
+          "spbh": {
+            "type": "string",
+            "index": "not_analyzed"
+          },
+        }
+      }
+    }
+  }
+}
+
+//curl -XPOST'http://host:9200' -d'
+{
+  "content": {
+    "type": "string",
+    "store": "no",
+    "term_vector": "with_positions_offsets",
+    "analyzer": "ik_max_word",
+    "search_analyzer": "ik_max_word",
+    "include_in_all": "true",
+    "boost": 8
+  }
+}

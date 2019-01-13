@@ -10,6 +10,7 @@ namespace Zl\Compose\Mq\AMQP;
 
 use App\Enum\CodeEnum;
 use Framework\Exceptions\ZxzApiException;
+use Framework\Handlers\CollectionHandler;
 use Framework\Handlers\ConfigHandler;
 use PhpAmqpLib\Channel\AMQPChannel;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
@@ -17,13 +18,14 @@ use PhpAmqpLib\Message\AMQPMessage;
 use PhpAmqpLib\Wire\AMQPTable;
 use Zl\Compose\Mq\Exp\ChannelExp;
 use Zl\Compose\Mq\Exp\ConnectExp;
+use Zl\Compose\Mq\Exp\RabbitMqExp;
 use Zl\Compose\Mq\Kernel\Interfaces\MQInterface;
 
 /**
  * Class Client
  * @package Zl\Compose\Mq\AMQP
  */
-class Client implements MQInterface
+class Client extends CollectionHandler implements MQInterface
 {
     /**
      * @var
@@ -69,6 +71,11 @@ class Client implements MQInterface
      */
     protected $routing_key;
 
+    /**
+     * @var array $batch_body
+     */
+    protected $batch_body = [];
+
 
     /**
      * @var bool $is_dead_letter
@@ -113,12 +120,17 @@ class Client implements MQInterface
         return $this;
     }
 
+    public function queueCount()
+    {
+
+    }
+
     /**
      * @param $queue_name
      * @param string $type
      * @return $this
      */
-    public function setQueue($queue_name, $type = AMQP_EX_TYPE_DIRECT, $args = [], $delayed_requeue_ms = 10000)
+    public function setQueue($queue_name, $args = [], $delayed_requeue_ms = 10000)
     {
         $subQueueName = $queue_name;
 
@@ -126,23 +138,25 @@ class Client implements MQInterface
             $subQueueName = $queue_name . '__dlx';
             $subDelayedQueueName = $subQueueName . '_requeue_' . $delayed_requeue_ms . 'ms';
 
-            $this->channel->queue_declare($subDelayedQueueName, false, false, false, false, false,
+            $this->channel->queue_declare($subDelayedQueueName, false, true, false, false, false,
                 new AMQPTable([
                     'x-dead-letter-exchange' => '',
                     'x-dead-letter-routing-key' => $subQueueName,
-                    'x-message-ttl' => $delayed_requeue_ms
+                    'x-message-ttl' => $delayed_requeue_ms,
+                    'x-queue-mode' => 'lazy'
                 ]));
 
-            $this->channel->queue_declare($subQueueName, false, false, false, false, false,
+            $this->channel->queue_declare($subQueueName, false, true, false, false, false,
                 new AMQPTable([
                     'x-dead-letter-exchange' => '',
                     'x-dead-letter-routing-key' => $subDelayedQueueName,
+                    'x-queue-mode' => 'lazy'
                 ]));
 
             $this->setQueueDelayTrue();
         } else {
-            $this->channel->queue_declare($subQueueName, false, false, false, false, false,
-                new AMQPTable([]));
+            $this->channel->queue_declare($subQueueName, false, true, false, false, false,
+                new AMQPTable(['x-queue-mode' => 'lazy']));
         }
         $this->queue_name = $subQueueName;
         return $this;
@@ -174,28 +188,59 @@ class Client implements MQInterface
             $msgBody, $this->exchange_name, $this->routing_key);
     }
 
+    public function batchPublishPre($body)
+    {
+        $this->channelValid();
+    }
+
+    public function batchPushlish()
+    {
+
+    }
+
+
     /**
      *
      */
-    public function publishWithOutExp()
+    public function publishWithOutExp($body)
     {
-        // TODO: Implement publishWithOutExp() method.
+        try {
+            $this->publish($body);
+        } catch (\Exception $exception) {
+            zxzLogExp($exception);
+        }
     }
 
     /**
      *
      */
-    public function publishWithConfirm()
+    public function publishWithConfirm($body)
     {
-        // TODO: Implement publishWithConfirm() method.
+        $this->channel->set_ack_handler(function (AMQPMessage $message) {
+            echo "Message acked with content " . $message->body . PHP_EOL;
+            zxzLog("Message ---acked with content " . $message->body . PHP_EOL, 'con');
+        });
+
+        $this->channel->set_nack_handler(function (AMQPMessage $message) {
+            echo "Message nacked with content " . $message->body . PHP_EOL;
+            zxzLog("Message nacked with content " . $message->body . PHP_EOL, 'con');
+        });
+
+        $this->channel->confirm_select();
+        $this->publish($body);
+        return $this->channel->wait_for_pending_acks();
     }
 
     /**
      *
      */
-    public function publishWithConfirmWithoutExp()
+    public function publishWithConfirmWithoutExp($body)
     {
-        // TODO: Implement publishWithConfirmWithoutExp() method.
+        try {
+            $this->publishWithConfirm($body);
+        } catch (\Exception $exception) {
+            zxzLogExp($exception);
+        }
     }
 
     /**
@@ -209,8 +254,11 @@ class Client implements MQInterface
     /**
      *
      */
-    public function consumerBlock(callable $callable, $no_ack = false, $suggest_death_count = 5)
+    public function consumerBlock(callable $callable, $no_ack = false, $suggest_death_count = 5, $block_num = 0)
     {
+        if (is_null($callable)) {
+            throw new RabbitMqExp('consumer function canit null', 499);
+        }
 //        $this->channel->basic_qos(0, 10, false);
         $a = $this->channel->basic_consume(
             $this->queue_name,
@@ -219,16 +267,13 @@ class Client implements MQInterface
             $no_ack,
             false,
             false,
-
             function ($message) use ($callable, $suggest_death_count) {
                 $need_ack = $callback_result = true;
                 $need_log = false;
+                $retry = 0;
                 /**
                  * @var AMQPMessage $message
                  */
-                zxzLog($message->body, 'mq');
-                zxzLog(get_object_vars($message), 'mq');
-                zxzLog($message->get_properties(), 'mq');
                 try {
                     /**
                      * @var AMQPTable $nativaHeaderData
@@ -244,7 +289,7 @@ class Client implements MQInterface
                         $need_ack = true;
                         $need_log = true;
                     } else {
-                        $callback_result = call_user_func($callable, $message->body);
+                        $callback_result = call_user_func($callable, json_decode($message->body, true));
                         $need_ack = $callback_result === false ? false : true;
                     }
                 } catch (\Exception $exception) {
@@ -260,11 +305,11 @@ class Client implements MQInterface
             });
 
         while (count($this->channel->callbacks)) {
-            $this->channel->wait();
+            $this->channel->wait(null, true);
         }
 
 //        while (isset($this->channel->callbacks[$a]) && $this->channel->getConnection()->select(null)) {
-//            $this->channel->wait(); // 这个wait蛮难理解的, 有点类似libevent的loop()
+//            $this->channel->wait();
 //            break;
 //        }
 
@@ -283,7 +328,7 @@ class Client implements MQInterface
      */
     public function reconnect()
     {
-        // TODO: Implement reconnect() method.
+        $connect = $this->isConnected();
     }
 
     /**
@@ -376,4 +421,12 @@ class Client implements MQInterface
     {
         return $this->is_dead_letter = true;
     }
+
+    public function getQueueCount()
+    {
+        echo $this->queueCount();
+        $a = $this->channel->queue_declare($this->queue_name, true, true, false, false, false);
+        var_dump($a);die;
+    }
 }
+
